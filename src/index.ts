@@ -5,94 +5,51 @@
  * @author Christian Schurr <chris@schurr.dev>
  */
 
-const whitespaceChars = [
-  ' ',
-  '\n',
-  '\t',
-  '\r',
-  '\f',
-  '\v',
-  '\u00a0',
-  '\u1680',
-  '\u2000',
-  '\u200a',
-  '\u2028',
-  '\u2029',
-  '\u202f',
-  '\u205f',
-  '\u3000',
-  '\ufeff',
-]
-const badChars = ['"', "'", '`', '\\', '[', '\n', '\r']
+const SEPARATOR_CHARS = [
+  // " ", // Space is used as a separator in the FSM
+  "\n",
+  "\t",
+  "\r",
+  "\f",
+  "\v",
+  "\u00a0",
+  "\u1680",
+  "\u2000",
+  "\u200a",
+  "\u2028",
+  "\u2029",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+  "\ufeff"
+];
 
-const State = {
-  init: 'init',
-  variantOrWord: 'variantOrWord',
-  variant: 'variant',
+const FORBIDDEN_CHARS = ['"', "'", "`", "\\", "[", "\n", "\r"];
 
-  'stack.Init': 'stack.Init',
-  'stack.VariantOrWord': 'stack.VariantOrWord',
-  'stack.Variant': 'stack.Variant',
-  'stack.Close': 'stack.Close',
-} as const
-type State = keyof typeof State
+const STATES = [
+  "idle",
+  "parsingText",
+  "handlingVariant",
+  "openingStack",
+  "parsingStackText",
+  "handlingStackVariant",
+  "closingStack"
+] as const;
+
+type State = (typeof STATES)[number];
 
 type MatchType = {
-  start: number
-  end: number
-  content: string
-}
+  start: number;
+  end: number;
+  content: string;
+};
+
 type StackType = {
-  nestedMatches: Array<Omit<StackType, 'nestedMatches'> & {endIdx: number}>
-  matches: Array<string>
-  variant: string
-  startIdx: number
-}
-
-type TransformOptions = {
-  expandOpenChar?: string
-  expandCloseChar?: string
-  separatorChar?: string
-  variantChar?: string
-}
-
-function stackClose(
-  machine: TransformMachineState,
-  idx: number,
-  hasWord: boolean,
-) {
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const currentStack = machine.context.stack.pop()!
-
-  if (hasWord) {
-    currentStack.matches.push(
-      machine.context.content.substring(machine.context.variantStartIdx, idx),
-    )
-  }
-  if (machine.context.stack.length > 0) {
-    machine.context.stack[machine.context.stack.length - 1]?.nestedMatches.push(
-      {
-        ...currentStack,
-        endIdx: idx,
-      },
-    )
-    machine.state = State['stack.Close']
-  } else {
-    currentStack.matches.push(
-      ...currentStack.nestedMatches.flatMap(nestedStack =>
-        nestedStack.matches.map(match => `${nestedStack.variant}${match}`),
-      ),
-    )
-    machine.context.matches.push({
-      start: currentStack.startIdx,
-      end: idx,
-      content: currentStack.matches
-        .map(match => `${currentStack.variant}${match}`)
-        .join(' '),
-    })
-    machine.state = State.init
-  }
-}
+  nestedMatches: Array<Omit<StackType, "nestedMatches"> & { endIdx: number }>;
+  matches: Array<string>;
+  variant: string;
+  startIdx: number;
+};
 
 function stackError(machine: TransformMachineState) {
   for (const stack of machine.context.stack) {
@@ -101,171 +58,211 @@ function stackError(machine: TransformMachineState) {
         machine.context.matches.push({
           start: nestedStack.startIdx,
           end: nestedStack.endIdx,
-          content: nestedStack.matches
-            .map(match => `${nestedStack.variant}${match}`)
-            .join(' '),
-        })
+          content: nestedStack.matches.map((match) => `${nestedStack.variant}${match}`).join(" ")
+        });
       }
     }
   }
-  machine.context.stack.length = 0
-  machine.state = State.init
+  machine.context.stack.length = 0;
+  machine.state = "idle";
+}
+
+function stackClose(machine: TransformMachineState, idx: number, hasWord: boolean) {
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const currentStack = machine.context.stack.pop()!;
+
+  if (hasWord) {
+    currentStack.matches.push(machine.context.content.substring(machine.context.variantStartIdx, idx));
+  }
+
+  if (machine.context.stack.length > 0) {
+    machine.context.stack[machine.context.stack.length - 1]?.nestedMatches.push({
+      ...currentStack,
+      endIdx: idx
+    });
+    machine.state = "closingStack";
+  } else {
+    // Apply nested variants
+    currentStack.matches.push(
+      ...currentStack.nestedMatches.flatMap((nestedStack) =>
+        nestedStack.matches.map((match) => `${nestedStack.variant}${match}`)
+      )
+    );
+
+    // Apply root-level variants
+    machine.context.matches.push({
+      start: currentStack.startIdx,
+      end: idx,
+      content: currentStack.matches.map((match) => `${currentStack.variant}${match}`).join(" ")
+    });
+    machine.state = "idle";
+  }
 }
 
 function openStack(machine: TransformMachineState) {
-  machine.state = State['stack.Init']
+  machine.state = "openingStack";
+
   machine.context.stack.push({
     matches: [],
     nestedMatches: [],
-    variant: machine.context.content.substring(
-      machine.context.variantStartIdx,
-      machine.context.variantEndIdx + 1,
-    ),
-    startIdx: machine.context.variantStartIdx,
-  })
+    variant: machine.context.content.substring(machine.context.variantStartIdx, machine.context.variantEndIdx + 1),
+    startIdx: machine.context.variantStartIdx
+  });
 }
 
 type TransformMachineState = {
   context: {
-    matches: Array<MatchType>
-    stack: Array<StackType>
-    variantStartIdx: number
-    variantEndIdx: number
-    content: string
-  }
+    matches: Array<MatchType>;
+    stack: Array<StackType>;
+    variantStartIdx: number;
+    variantEndIdx: number;
+    content: string;
+  };
   settings: {
-    badChars: Array<string>
-    variantChar: string
-    expandOpen: string
-    expandClose: string
-    separatorChar: string
-  }
-  state: State
-}
-type TransformMachine = Record<
-  State,
-  (idx: number, char: string, machineState: TransformMachineState) => void
->
+    forbiddenChars: Set<string>;
+    variantChar: string;
+    expandOpen: string;
+    expandClose: string;
+    separatorChar: string;
+  };
+  state: State;
+};
+
+type TransformMachine = Record<State, (idx: number, char: string, machineState: TransformMachineState) => void>;
 
 const transformMachine: TransformMachine = {
-  [State.init]: (idx, char, machineState) => {
-    if (!machineState.settings.badChars.includes(char)) {
-      machineState.context.variantStartIdx = idx
-      machineState.state = State.variantOrWord
+  idle: (idx, char, machineState) => {
+    if (!machineState.settings.forbiddenChars.has(char)) {
+      machineState.context.variantStartIdx = idx;
+      machineState.state = "parsingText";
     }
   },
-  [State.variantOrWord]: (idx, char, machineState) => {
+
+  parsingText: (idx, char, machineState) => {
     if (char === machineState.settings.variantChar) {
-      machineState.context.variantEndIdx = idx
-      machineState.state = State.variant
-    } else if (machineState.settings.badChars.includes(char)) {
-      machineState.state = State.init
-    }
-  },
-  [State.variant]: (_idx, char, machineState) => {
-    if (char === machineState.settings.expandOpen) {
-      openStack(machineState)
-    } else if (machineState.settings.badChars.includes(char)) {
-      machineState.state = State.init
-    } else {
-      machineState.state = State.variantOrWord
-    }
-  },
-  'stack.Init': (idx, char, machineState) => {
-    if (machineState.settings.badChars.includes(char)) {
-      stackError(machineState)
-    } else if (char === machineState.settings.expandClose) {
-      stackError(machineState)
-    } else {
-      machineState.context.variantStartIdx = idx
-      machineState.state = State['stack.VariantOrWord']
-    }
-  },
-  'stack.VariantOrWord': (idx, char, machineState) => {
-    if (char === machineState.settings.separatorChar) {
-      machineState.context.stack[
-        machineState.context.stack.length - 1
-      ]?.matches.push(
-        machineState.context.content.substring(
-          machineState.context.variantStartIdx,
-          idx,
-        ),
-      )
-      machineState.state = State['stack.Init']
-    } else if (char === machineState.settings.variantChar) {
-      machineState.context.variantEndIdx = idx
-      machineState.state = State['stack.Variant']
-    } else if (char === machineState.settings.expandClose) {
-      stackClose(machineState, idx, true)
-    }
-  },
-  'stack.Variant': (_idx, char, machineState) => {
-    if (char === machineState.settings.expandOpen) {
-      openStack(machineState)
-    } else if (machineState.settings.badChars.includes(char)) {
-      stackError(machineState)
-    } else {
-      machineState.state = State['stack.VariantOrWord']
-    }
-  },
-  'stack.Close': (idx, char, machineState) => {
-    if (machineState.settings.badChars.includes(char)) {
-      stackError(machineState)
-    } else if (char === machineState.settings.expandClose) {
-      stackClose(machineState, idx, false)
+      machineState.context.variantEndIdx = idx;
+      machineState.state = "handlingVariant";
     } else if (char === machineState.settings.separatorChar) {
-      machineState.state = State['stack.Init']
-    } else {
-      stackError(machineState)
+      // Move the variant start to after the separator char, which is a space
+      machineState.context.variantStartIdx = idx + 1;
+    } else if (machineState.settings.forbiddenChars.has(char)) {
+      machineState.state = "idle";
     }
   },
+
+  handlingVariant: (_idx, char, machineState) => {
+    if (char === machineState.settings.expandOpen) {
+      openStack(machineState);
+    } else if (machineState.settings.forbiddenChars.has(char)) {
+      machineState.state = "idle";
+    } else {
+      machineState.state = "parsingText";
+    }
+  },
+
+  openingStack: (idx, char, machineState) => {
+    if (machineState.settings.forbiddenChars.has(char)) {
+      stackError(machineState);
+    } else if (char === machineState.settings.expandClose) {
+      stackError(machineState);
+    } else {
+      machineState.context.variantStartIdx = idx;
+      machineState.state = "parsingStackText";
+    }
+  },
+
+  parsingStackText: (idx, char, machineState) => {
+    if (char === machineState.settings.separatorChar) {
+      const contentPiece = machineState.context.content.substring(machineState.context.variantStartIdx, idx);
+
+      // Push the next applicable style to the stack (like "bg-[#FFFF00]")
+      machineState.context.stack[machineState.context.stack.length - 1]?.matches.push(contentPiece);
+      machineState.state = "openingStack";
+    } else if (char === machineState.settings.variantChar) {
+      machineState.context.variantEndIdx = idx;
+      machineState.state = "handlingStackVariant";
+    } else if (char === machineState.settings.expandClose) {
+      stackClose(machineState, idx, true);
+    }
+  },
+
+  handlingStackVariant: (_idx, char, machineState) => {
+    if (char === machineState.settings.expandOpen) {
+      openStack(machineState);
+    } else if (machineState.settings.forbiddenChars.has(char)) {
+      stackError(machineState);
+    } else {
+      machineState.state = "parsingStackText";
+    }
+  },
+
+  closingStack: (idx, char, machineState) => {
+    if (machineState.settings.forbiddenChars.has(char)) {
+      stackError(machineState);
+    } else if (char === machineState.settings.expandClose) {
+      stackClose(machineState, idx, false);
+    } else if (char === machineState.settings.separatorChar) {
+      machineState.state = "openingStack";
+    } else {
+      stackError(machineState);
+    }
+  }
+};
+
+function compressWhitespace(str: string) {
+  return str
+    .replace(/\s+/g, " ") // Replace all whitespace with a single space
+    .replace(/\(\s+/g, "(") // Replace "( " with "("
+    .replace(/\s+\)/g, ")") // Replace " )" with ")"
+    .trim(); // Remove leading/trailing whitespace
 }
 
-function transform(content: string, options?: TransformOptions) {
+function transform(content: string) {
+  const compressedContent = compressWhitespace(content);
+
   const machineState: TransformMachineState = {
     context: {
       matches: [],
       stack: [],
       variantStartIdx: 0,
       variantEndIdx: 0,
-      content,
+      content: compressedContent
     },
-    state: State.init,
+    state: "idle",
     settings: {
-      badChars: [...badChars, ...whitespaceChars],
-      expandClose: options?.expandCloseChar ?? ')',
-      expandOpen: options?.expandOpenChar ?? '(',
-      separatorChar: options?.separatorChar ?? ',',
-      variantChar: options?.variantChar ?? ':',
-    },
-  }
-  for (let idx = 0; idx < content.length; ++idx) {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const char = content[idx]!
-    const handleIdxForState = transformMachine[machineState.state]
+      forbiddenChars: new Set<string>([...FORBIDDEN_CHARS, ...SEPARATOR_CHARS]),
+      expandClose: ")",
+      expandOpen: "(",
+      separatorChar: " ",
+      variantChar: ":"
+    }
+  };
 
-    handleIdxForState(idx, char, machineState)
+  for (let idx = 0; idx < compressedContent.length; ++idx) {
+    const char = compressedContent[idx]!;
+
+    const handleIdxForState = transformMachine[machineState.state];
+
+    handleIdxForState(idx, char, machineState);
   }
 
-  const matches = machineState.context.matches
+  const matches = machineState.context.matches;
 
   if (matches.length) {
-    let prevStart = 0
+    let prevStart = 0;
+
     const str = matches.reduce((prev, cur) => {
-      const substr = `${prev}${content.substring(prevStart, cur.start)}${
-        cur.content
-      }`
-      prevStart = cur.end + 1
-      return substr
-    }, '')
-    return `${str}${content.substring(prevStart)}`
+      const substr = `${prev}${compressedContent.substring(prevStart, cur.start)}${cur.content}`;
+      prevStart = cur.end + 1;
+      return substr;
+    }, "");
+
+    return `${str}${compressedContent.substring(prevStart)}`;
   }
 
-  return content
+  return compressedContent;
 }
 
-export default function createTransformer(options?: TransformOptions) {
-  return (content: string) => transform(content, options)
+export default function createTransformer() {
+  return (content: string) => transform(content);
 }
-
-export type {TransformOptions}
